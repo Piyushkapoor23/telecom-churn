@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FluentCare | Stuttering Detection & Therapy</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            calm: { 50: "#effcf8", 100: "#d8f5ef", 300: "#80dac8", 500: "#2fa892", 700: "#1f6a62" },
+            ocean: { 50: "#eef7ff", 100: "#d9ecff", 300: "#8ec7ff", 500: "#3588fc", 600: "#2168f1", 900: "#213d8e" },
+          },
+          boxShadow: { glass: "0 24px 80px rgba(33, 61, 142, 0.16)" },
+        },
+      },
+    };
+  </script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(90, 169, 255, 0.18), transparent 30%),
+        radial-gradient(circle at bottom right, rgba(47, 168, 146, 0.16), transparent 26%),
+        linear-gradient(160deg, #f6fbff 0%, #edf8f4 48%, #f8fbff 100%);
+      color: #113047;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .glass {
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(18px);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+    }
+    .wave-canvas {
+      background:
+        linear-gradient(180deg, rgba(33, 61, 142, 0.08), rgba(47, 168, 146, 0.1)),
+        linear-gradient(90deg, rgba(255,255,255,0.8), rgba(255,255,255,0.35));
+    }
+    .severity-ring::after {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      background: rgba(255, 255, 255, 0.86);
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const { useEffect, useMemo, useRef, useState } = React;
+    const html = htm.bind(React.createElement);
+    const STORAGE_KEY = "fluentcare_sessions_v1";
+    const MOCK_SESSIONS = [
+      { id: "mock-1", date: "2026-03-20T09:10:00", severityPct: 14.8, severityLabel: "Moderate", totalEvents: 19, speechRate: 101 },
+      { id: "mock-2", date: "2026-03-23T09:05:00", severityPct: 12.1, severityLabel: "Moderate", totalEvents: 16, speechRate: 104 },
+      { id: "mock-3", date: "2026-03-25T09:20:00", severityPct: 9.7, severityLabel: "Moderate", totalEvents: 13, speechRate: 108 },
+      { id: "mock-4", date: "2026-03-28T08:55:00", severityPct: 8.4, severityLabel: "Moderate", totalEvents: 11, speechRate: 112 },
+      { id: "mock-5", date: "2026-03-30T09:15:00", severityPct: 6.2, severityLabel: "Moderate", totalEvents: 8, speechRate: 114 },
+      { id: "mock-6", date: "2026-04-01T09:05:00", severityPct: 4.9, severityLabel: "Mild", totalEvents: 6, speechRate: 118 },
+    ];
+    const THERAPY_TIPS = [
+      { title: "Breathing Reset", body: "Pause before difficult phrases, inhale for 4 seconds, and start the sentence on a gentle exhale." },
+      { title: "Easy Onset Practice", body: "Begin words softly instead of pushing them out. This is helpful for tension before vowels." },
+      { title: "Slow Speech Drill", body: "Aim for short phrases of 4 to 6 words, then briefly pause to reduce repetition frequency." },
+      { title: "Stretch and Release", body: "If you notice a prolongation, lengthen the whole phrase smoothly instead of forcing the next sound." },
+    ];
+    const severityTheme = {
+      Mild: { pill: "bg-emerald-100 text-emerald-700", text: "text-emerald-600", ring: "conic-gradient(from 0deg, #10b981, #6ee7b7)" },
+      Moderate: { pill: "bg-amber-100 text-amber-700", text: "text-amber-600", ring: "conic-gradient(from 0deg, #f59e0b, #fcd34d)" },
+      Severe: { pill: "bg-rose-100 text-rose-700", text: "text-rose-600", ring: "conic-gradient(from 0deg, #f43f5e, #fb7185)" },
+    };
+
+    function initializeHistory() {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(MOCK_SESSIONS));
+        return [...MOCK_SESSIONS];
+      }
+      try {
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed) || !parsed.length) throw new Error("bad history");
+        return parsed;
+      } catch {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(MOCK_SESSIONS));
+        return [...MOCK_SESSIONS];
+      }
+    }
+
+    function saveHistory(history) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    }
+
+    function formatTime(totalSeconds) {
+      const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+      const seconds = String(totalSeconds % 60).padStart(2, "0");
+      return `${minutes}:${seconds}`;
+    }
+
+    function formatDate(dateString) {
+      return new Date(dateString).toLocaleDateString([], { month: "short", day: "numeric" });
+    }
+
+    function getSeverityLabel(percentage) {
+      if (percentage < 5) return "Mild";
+      if (percentage < 15) return "Moderate";
+      return "Severe";
+    }
+
+    function normalizeWord(word) {
+      return (word || "").toLowerCase().replace(/[^\w']/g, "").trim();
+    }
+
+    function buildFallbackWordTimeline(transcript, durationSec) {
+      const words = transcript.split(/\s+/).map(normalizeWord).filter(Boolean);
+      const safeDuration = Math.max(durationSec, Math.max(words.length * 0.45, 2));
+      const step = safeDuration / Math.max(words.length, 1);
+      return words.map((text, index) => {
+        const start = index * step;
+        const duration = Math.max(0.18, Math.min(step * 0.85, 0.42));
+        return { text, start, end: start + duration };
+      });
+    }
+
+    // Detection algorithm:
+    // 1. Repetitions: identical normalized words spoken back-to-back.
+    // 2. Blocks: pauses > 500 ms between consecutive word timestamps.
+    // 3. Prolongations: unusually long word duration relative to the utterance.
+    function detectStuttering(wordTimeline, sessionDurationSec) {
+      const cleaned = wordTimeline.map((entry) => ({
+        text: normalizeWord(entry.text),
+        start: Number(entry.start ?? 0),
+        end: Number(entry.end ?? entry.start ?? 0),
+      })).filter((entry) => entry.text);
+      const durations = cleaned.map((word) => Math.max(0.05, word.end - word.start));
+      const avgDuration = durations.reduce((sum, value) => sum + value, 0) / Math.max(durations.length, 1);
+      const repetitions = [];
+      const blocks = [];
+      const prolongations = [];
+
+      for (let index = 1; index < cleaned.length; index += 1) {
+        const previous = cleaned[index - 1];
+        const current = cleaned[index];
+        const gap = current.start - previous.end;
+        if (current.text === previous.text) repetitions.push({ type: "repetition", word: current.text, at: current.start });
+        if (gap > 0.5) blocks.push({ type: "block", word: current.text, at: current.start, gap });
+      }
+
+      cleaned.forEach((word, index) => {
+        const duration = Math.max(0.05, word.end - word.start);
+        const threshold = Math.max(0.6, avgDuration * 1.85);
+        const repeatedLetters = /(.)\1{2,}/.test(word.text);
+        if (duration >= threshold || (duration > 0.45 && repeatedLetters)) {
+          prolongations.push({ type: "prolongation", word: word.text, at: word.start, duration, index });
+        }
+      });
+
+      const totalEvents = repetitions.length + blocks.length + prolongations.length;
+      const totalWords = cleaned.length;
+      const minutes = Math.max(sessionDurationSec / 60, 1 / 60);
+      const severityPct = totalWords ? (totalEvents / totalWords) * 100 : 0;
+      const map = {};
+      [...repetitions, ...blocks, ...prolongations].forEach((event) => {
+        if (event.word) map[event.word] = (map[event.word] || 0) + 1;
+      });
+
+      return {
+        transcript: cleaned.map((word) => word.text).join(" "),
+        totalWords,
+        totalEvents,
+        repetitions,
+        blocks,
+        prolongations,
+        eventsPerMinute: totalEvents / minutes,
+        severityPct,
+        severityLabel: getSeverityLabel(severityPct),
+        speechRate: totalWords / minutes,
+        problematicWords: Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([word, count]) => ({ word, count })),
+      };
+    }
+
+    async function blobToFloat32Array(blob) {
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+      const channel = audioBuffer.getChannelData(0);
+      const floatArray = new Float32Array(channel.length);
+      floatArray.set(channel);
+      await audioContext.close();
+      return { audio: floatArray, sampleRate: audioBuffer.sampleRate };
+    }
+
+    async function transcribeWithWhisper(blob, onStatus) {
+      onStatus("Loading Whisper model...");
+      const { pipeline, env } = await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
+      env.allowLocalModels = false;
+      env.useBrowserCache = true;
+      const transcriber = await pipeline("automatic-speech-recognition", "Xenova/whisper-small.en", {
+        progress_callback: (event) => {
+          if (event.status === "progress" && typeof event.progress === "number") {
+            onStatus(`Downloading Whisper assets... ${Math.round(event.progress)}%`);
+          }
+        },
+      });
+      onStatus("Preparing audio for Whisper...");
+      const { audio, sampleRate } = await blobToFloat32Array(blob);
+      onStatus("Running timestamp analysis...");
+      const result = await transcriber(audio, {
+        chunk_length_s: 20,
+        stride_length_s: 5,
+        top_k: 1,
+        language: "english",
+        return_timestamps: "word",
+        sampling_rate: sampleRate,
+      });
+      const timeline = (Array.isArray(result.chunks) ? result.chunks : [])
+        .filter((chunk) => Array.isArray(chunk.timestamp))
+        .map((chunk) => ({
+          text: normalizeWord(chunk.text),
+          start: Number(chunk.timestamp[0] || 0),
+          end: Number(chunk.timestamp[1] || chunk.timestamp[0] || 0),
+        }))
+        .filter((entry) => entry.text);
+      return { transcript: result.text || "", timeline };
+    }
+
+    function useWaveform(analyserRef, isRecording) {
+      const canvasRef = useRef(null);
+      useEffect(() => {
+        let animationFrame;
+        function draw() {
+          const canvas = canvasRef.current;
+          const analyser = analyserRef.current;
+          if (!canvas || !analyser) {
+            animationFrame = requestAnimationFrame(draw);
+            return;
+          }
+          const ctx = canvas.getContext("2d");
+          const width = canvas.width;
+          const height = canvas.height;
+          const dataArray = new Uint8Array(analyser.fftSize);
+          analyser.getByteTimeDomainData(dataArray);
+          ctx.clearRect(0, 0, width, height);
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = isRecording ? "#2168f1" : "#2fa892";
+          ctx.beginPath();
+          const slice = width / dataArray.length;
+          let x = 0;
+          for (let i = 0; i < dataArray.length; i += 1) {
+            const y = (dataArray[i] / 128.0) * height / 2;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            x += slice;
+          }
+          ctx.lineTo(width, height / 2);
+          ctx.stroke();
+          animationFrame = requestAnimationFrame(draw);
+        }
+        animationFrame = requestAnimationFrame(draw);
+        return () => cancelAnimationFrame(animationFrame);
+      }, [analyserRef, isRecording]);
+      return canvasRef;
+    }
+
+    function App() {
+      const [screen, setScreen] = useState("home");
+      const [isRecording, setIsRecording] = useState(false);
+      const [liveTranscript, setLiveTranscript] = useState("");
+      const [sessionSeconds, setSessionSeconds] = useState(0);
+      const [statusMessage, setStatusMessage] = useState("Ready to begin a guided fluency session.");
+      const [results, setResults] = useState(null);
+      const [history, setHistory] = useState(() => initializeHistory());
+
+      const mediaRecorderRef = useRef(null);
+      const recognitionRef = useRef(null);
+      const streamRef = useRef(null);
+      const audioChunksRef = useRef([]);
+      const transcriptRef = useRef("");
+      const intervalRef = useRef(null);
+      const audioContextRef = useRef(null);
+      const analyserRef = useRef(null);
+      const chartInstanceRef = useRef(null);
+      const chartCanvasRef = useRef(null);
+      const recordingActiveRef = useRef(false);
+      const canvasRef = useWaveform(analyserRef, isRecording);
+      const latestSessions = useMemo(() => history.slice(-7), [history]);
+
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.width = canvas.clientWidth * window.devicePixelRatio;
+          canvas.height = canvas.clientHeight * window.devicePixelRatio;
+        }
+      }, [canvasRef, screen]);
+
+      useEffect(() => {
+        if (!chartCanvasRef.current || screen === "recording") return;
+        if (chartInstanceRef.current) chartInstanceRef.current.destroy();
+        chartInstanceRef.current = new Chart(chartCanvasRef.current, {
+          type: "line",
+          data: {
+            labels: latestSessions.map((session) => formatDate(session.date)),
+            datasets: [{
+              label: "Severity %",
+              data: latestSessions.map((session) => Number(session.severityPct.toFixed(1))),
+              borderColor: "#2168f1",
+              backgroundColor: "rgba(33, 104, 241, 0.15)",
+              fill: true,
+              tension: 0.35,
+              pointRadius: 4,
+              pointBackgroundColor: "#2fa892",
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              y: { beginAtZero: true, ticks: { callback: (value) => `${value}%` } },
+              x: { grid: { display: false } },
+            },
+          },
+        });
+        return () => {
+          if (chartInstanceRef.current) {
+            chartInstanceRef.current.destroy();
+            chartInstanceRef.current = null;
+          }
+        };
+      }, [latestSessions, screen]);
+
+      useEffect(() => () => cleanupAudio(), []);
+
+      function cleanupAudio() {
+        recordingActiveRef.current = false;
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        if (recognitionRef.current) {
+          recognitionRef.current.onresult = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.onend = null;
+          try { recognitionRef.current.stop(); } catch {}
+        }
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        if (audioContextRef.current) {
+          audioContextRef.current.close();
+          audioContextRef.current = null;
+        }
+      }
+
+      async function startSession() {
+        try {
+          setScreen("recording");
+          setResults(null);
+          setLiveTranscript("");
+          transcriptRef.current = "";
+          audioChunksRef.current = [];
+          setSessionSeconds(0);
+          setStatusMessage("Requesting microphone access...");
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          streamRef.current = stream;
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          audioContextRef.current = audioContext;
+          const source = audioContext.createMediaStreamSource(stream);
+          const analyser = audioContext.createAnalyser();
+          analyser.fftSize = 2048;
+          analyserRef.current = analyser;
+          source.connect(analyser);
+
+          const recorder = new MediaRecorder(stream);
+          mediaRecorderRef.current = recorder;
+          recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) audioChunksRef.current.push(event.data);
+          };
+          recorder.start(250);
+
+          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (SpeechRecognition) {
+            const recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = "en-US";
+            recognitionRef.current = recognition;
+            recognition.onresult = (event) => {
+              let combined = "";
+              for (let i = 0; i < event.results.length; i += 1) combined += `${event.results[i][0].transcript} `;
+              transcriptRef.current = combined.trim();
+              setLiveTranscript(combined.trim());
+            };
+            recognition.onerror = () => setStatusMessage("Live browser transcript is unavailable, but recording continues for analysis.");
+            recognition.onend = () => {
+              if (recordingActiveRef.current) {
+                try { recognition.start(); } catch {}
+              }
+            };
+            recognition.start();
+          } else {
+            setStatusMessage("Microphone is active. Live transcription is limited on this browser.");
+          }
+
+          intervalRef.current = setInterval(() => setSessionSeconds((value) => value + 1), 1000);
+          setIsRecording(true);
+          recordingActiveRef.current = true;
+          setStatusMessage("Listening in real time. Speak naturally to begin analysis.");
+        } catch (error) {
+          console.error(error);
+          cleanupAudio();
+          setIsRecording(false);
+          setScreen("home");
+          setStatusMessage("Microphone access was blocked. Please allow access and try again.");
+        }
+      }
+
+      async function stopSession() {
+        if (!mediaRecorderRef.current) return;
+        setIsRecording(false);
+        recordingActiveRef.current = false;
+        setStatusMessage("Finishing recording...");
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        if (recognitionRef.current) {
+          try { recognitionRef.current.stop(); } catch {}
+        }
+        const recorder = mediaRecorderRef.current;
+        const blob = await new Promise((resolve) => {
+          recorder.onstop = () => resolve(new Blob(audioChunksRef.current, { type: "audio/webm" }));
+          recorder.stop();
+        });
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+
+        try {
+          let transcript = transcriptRef.current;
+          let timeline = [];
+          try {
+            const whisperResult = await transcribeWithWhisper(blob, setStatusMessage);
+            transcript = whisperResult.transcript || transcript;
+            timeline = whisperResult.timeline;
+            setStatusMessage("Whisper analysis complete.");
+          } catch (whisperError) {
+            console.warn("Whisper fallback engaged", whisperError);
+            setStatusMessage("Whisper was unavailable on this device. Using demo transcript timing fallback.");
+          }
+          if (!timeline.length) timeline = buildFallbackWordTimeline(transcript, sessionSeconds || 1);
+          const analysis = detectStuttering(timeline, sessionSeconds || 1);
+          const mergedResults = { ...analysis, transcript: transcript || analysis.transcript || "No transcript captured.", duration: sessionSeconds };
+          const newSession = {
+            id: `session-${Date.now()}`,
+            date: new Date().toISOString(),
+            severityPct: mergedResults.severityPct,
+            severityLabel: mergedResults.severityLabel,
+            totalEvents: mergedResults.totalEvents,
+            speechRate: mergedResults.speechRate,
+          };
+          const updatedHistory = [...history, newSession].slice(-12);
+          setHistory(updatedHistory);
+          saveHistory(updatedHistory);
+          setResults(mergedResults);
+          setLiveTranscript(mergedResults.transcript);
+          setScreen("results");
+        } catch (error) {
+          console.error(error);
+          setStatusMessage("Analysis failed. Please try another short recording.");
+          setScreen("home");
+        }
+      }
+
+      const currentSeverity = results ? severityTheme[results.severityLabel] : severityTheme.Mild;
+
+      return html`
+        <main className="min-h-screen px-4 py-6 md:px-8">
+          <div className="mx-auto max-w-7xl">
+            <section className="relative overflow-hidden rounded-[32px] glass shadow-glass">
+              <div className="absolute -left-8 top-10 h-32 w-32 rounded-full bg-ocean-100/80 blur-3xl"></div>
+              <div className="absolute right-0 top-0 h-40 w-40 rounded-full bg-calm-100/80 blur-3xl"></div>
+              <div className="grid gap-6 p-5 md:grid-cols-[1.2fr_0.8fr] md:p-8">
+                <div className="space-y-5">
+                  <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-4 py-2 text-sm font-medium text-ocean-600 shadow-sm">
+                    <span className="h-2.5 w-2.5 rounded-full bg-calm-500"></span>
+                    Real-time Fluency Intelligence
+                  </div>
+                  <div className="space-y-3">
+                    <h1 className="max-w-2xl text-4xl font-bold tracking-tight text-slate-900 md:text-5xl">
+                      FluentCare detects stuttering patterns and turns each practice session into therapy guidance.
+                    </h1>
+                    <p className="max-w-2xl text-base leading-7 text-slate-600 md:text-lg">
+                      Record speech, visualize it live, analyze repetitions, blocks, and prolongations, then track progress with a calm clinical dashboard.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl bg-white/75 p-4 shadow-sm">
+                      <div className="text-sm text-slate-500">Detection Modes</div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">Repetitions, blocks, prolongations</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/75 p-4 shadow-sm">
+                      <div className="text-sm text-slate-500">Speech Rate</div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">${results ? `${Math.round(results.speechRate)} wpm` : "Auto calculated"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/75 p-4 shadow-sm">
+                      <div className="text-sm text-slate-500">Session Status</div>
+                      <div className="mt-1 text-lg font-semibold text-slate-900">${isRecording ? "Recording live" : screen === "results" ? "Analysis ready" : "Waiting to start"}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <button onClick=${startSession} disabled=${isRecording} className="rounded-2xl bg-ocean-600 px-6 py-4 text-lg font-semibold text-white shadow-lg shadow-ocean-500/25 transition hover:bg-ocean-700 disabled:cursor-not-allowed disabled:opacity-60">
+                      ${isRecording ? "Session In Progress" : "Start Session"}
+                    </button>
+                    ${screen === "recording" ? html`
+                      <button onClick=${stopSession} className="rounded-2xl bg-rose-500 px-6 py-4 text-lg font-semibold text-white shadow-lg shadow-rose-500/25 transition hover:bg-rose-600">
+                        Stop & Analyze
+                      </button>
+                    ` : null}
+                  </div>
+                  <div className="rounded-2xl border border-white/60 bg-white/70 p-4 text-sm text-slate-600">
+                    <div className="font-semibold text-slate-800">Live status</div>
+                    <div className="mt-1">${statusMessage}</div>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] bg-slate-900 p-5 text-white shadow-2xl shadow-slate-900/20">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm uppercase tracking-[0.3em] text-slate-400">Session monitor</div>
+                      <div className="mt-2 text-3xl font-semibold">${formatTime(sessionSeconds)}</div>
+                    </div>
+                    <div className="rounded-full bg-white/10 px-4 py-2 text-sm text-slate-200">${isRecording ? "Mic active" : "Standby"}</div>
+                  </div>
+                  <div className="mt-5 overflow-hidden rounded-3xl border border-white/10 p-3">
+                    <canvas ref=${canvasRef} className="wave-canvas h-36 w-full rounded-2xl"></canvas>
+                  </div>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl bg-white/5 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Events/min</div>
+                      <div className="mt-2 text-2xl font-semibold">${results ? results.eventsPerMinute.toFixed(1) : "--"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Severity</div>
+                      <div className="mt-2 text-2xl font-semibold">${results ? results.severityLabel : "--"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Words/min</div>
+                      <div className="mt-2 text-2xl font-semibold">${results ? Math.round(results.speechRate) : "--"}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            ${screen === "recording" ? html`
+              <section className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+                <div className="rounded-[28px] glass p-6 shadow-glass">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-slate-900">Recording Interface</h2>
+                      <p className="text-slate-600">Your transcript updates live while the app captures audio for final Whisper analysis.</p>
+                    </div>
+                    <div className="rounded-full bg-rose-100 px-4 py-2 text-sm font-semibold text-rose-600">Live</div>
+                  </div>
+                  <div className="mt-5 rounded-3xl bg-slate-50 p-5">
+                    <div className="mb-2 text-sm font-medium text-slate-500">Real-time transcript</div>
+                    <div className="min-h-[180px] rounded-2xl border border-slate-200 bg-white p-4 text-lg leading-8 text-slate-700 shadow-inner">
+                      ${liveTranscript || "Listening... your words will appear here in real time."}
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-[28px] glass p-6 shadow-glass">
+                  <h3 className="text-xl font-semibold text-slate-900">What We Track</h3>
+                  <div className="mt-4 space-y-3">
+                    <div className="rounded-2xl bg-ocean-50 p-4">
+                      <div className="font-semibold text-ocean-900">Repetitions</div>
+                      <div className="mt-1 text-sm text-ocean-600">Detects immediate repeated words like "I I I want".</div>
+                    </div>
+                    <div className="rounded-2xl bg-calm-50 p-4">
+                      <div className="font-semibold text-calm-700">Blocks</div>
+                      <div className="mt-1 text-sm text-calm-700">Flags pauses longer than 500ms between timestamped words.</div>
+                    </div>
+                    <div className="rounded-2xl bg-amber-50 p-4">
+                      <div className="font-semibold text-amber-700">Prolongations</div>
+                      <div className="mt-1 text-sm text-amber-700">Estimates stretched sounds using long word durations from Whisper timing.</div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ` : null}
+            ${screen === "results" && results ? html`
+              <section className="mt-6 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+                <div className="space-y-6">
+                  <div className="rounded-[28px] glass p-6 shadow-glass">
+                    <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <div className="text-sm uppercase tracking-[0.25em] text-slate-500">Session results</div>
+                        <h2 className="mt-2 text-3xl font-semibold text-slate-900">Fluency Summary</h2>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="severity-ring relative grid h-28 w-28 place-items-center rounded-full" style=${{ background: currentSeverity.ring }}>
+                          <div className="relative z-10 text-center">
+                            <div className="text-2xl font-bold text-slate-900">${results.severityPct.toFixed(1)}%</div>
+                            <div className="text-xs uppercase tracking-[0.25em] text-slate-500">Severity</div>
+                          </div>
+                        </div>
+                        <div>
+                          <div className=${`inline-flex rounded-full px-4 py-2 text-sm font-semibold ${currentSeverity.pill}`}>${results.severityLabel}</div>
+                          <div className="mt-3 text-sm text-slate-500">Based on stuttered events / total words</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-2xl bg-white/80 p-4 shadow-sm"><div className="text-sm text-slate-500">Total events</div><div className="mt-1 text-3xl font-semibold text-slate-900">${results.totalEvents}</div></div>
+                      <div className="rounded-2xl bg-white/80 p-4 shadow-sm"><div className="text-sm text-slate-500">Repetitions</div><div className="mt-1 text-3xl font-semibold text-slate-900">${results.repetitions.length}</div></div>
+                      <div className="rounded-2xl bg-white/80 p-4 shadow-sm"><div className="text-sm text-slate-500">Blocks</div><div className="mt-1 text-3xl font-semibold text-slate-900">${results.blocks.length}</div></div>
+                      <div className="rounded-2xl bg-white/80 p-4 shadow-sm"><div className="text-sm text-slate-500">Prolongations</div><div className="mt-1 text-3xl font-semibold text-slate-900">${results.prolongations.length}</div></div>
+                    </div>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="rounded-2xl bg-slate-50 p-4"><div className="text-sm text-slate-500">Events per minute</div><div className="mt-2 text-2xl font-semibold text-slate-900">${results.eventsPerMinute.toFixed(1)}</div></div>
+                      <div className="rounded-2xl bg-slate-50 p-4"><div className="text-sm text-slate-500">Speech rate</div><div className="mt-2 text-2xl font-semibold text-slate-900">${Math.round(results.speechRate)} words/min</div></div>
+                    </div>
+                    <div className="mt-4 rounded-3xl bg-slate-50 p-5">
+                      <div className="mb-2 text-sm font-medium text-slate-500">Final transcript</div>
+                      <div className="rounded-2xl bg-white p-4 text-slate-700 shadow-inner">${results.transcript}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[28px] glass p-6 shadow-glass">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-2xl font-semibold text-slate-900">Progress Tracking</h3>
+                        <p className="text-slate-600">Recent session severity shows whether fluency is improving over time.</p>
+                      </div>
+                    </div>
+                    <div className="mt-5 h-72 rounded-3xl bg-white/85 p-4">
+                      <canvas ref=${chartCanvasRef}></canvas>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="rounded-[28px] glass p-6 shadow-glass">
+                    <h3 className="text-2xl font-semibold text-slate-900">Therapy Tips</h3>
+                    <p className="mt-1 text-slate-600">Suggestions are tailored to common moments of tension and speech pacing.</p>
+                    <div className="mt-5 space-y-3">
+                      ${THERAPY_TIPS.map((tip, index) => html`
+                        <div key=${tip.title} className="rounded-2xl bg-white/85 p-4 shadow-sm">
+                          <div className="flex items-center gap-3">
+                            <div className="grid h-9 w-9 place-items-center rounded-full bg-calm-100 font-semibold text-calm-700">${index + 1}</div>
+                            <div className="font-semibold text-slate-900">${tip.title}</div>
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-slate-600">${tip.body}</p>
+                        </div>
+                      `)}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[28px] glass p-6 shadow-glass">
+                    <h3 className="text-2xl font-semibold text-slate-900">Problematic Words & Sounds</h3>
+                    <p className="mt-1 text-slate-600">These tokens appeared most often near detected stuttering events.</p>
+                    <div className="mt-5 flex flex-wrap gap-3">
+                      ${results.problematicWords.length ? results.problematicWords.map((item) => html`
+                        <div key=${item.word} className="rounded-full bg-ocean-50 px-4 py-2 text-sm font-semibold text-ocean-600">${item.word} - ${item.count}x</div>
+                      `) : html`<div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">No repeated hotspots were strong enough to flag in this session.</div>`}
+                    </div>
+                    <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl bg-slate-50 p-4"><div className="text-sm text-slate-500">Session length</div><div className="mt-2 text-xl font-semibold text-slate-900">${formatTime(results.duration)}</div></div>
+                      <div className="rounded-2xl bg-slate-50 p-4"><div className="text-sm text-slate-500">Total words</div><div className="mt-2 text-xl font-semibold text-slate-900">${results.totalWords}</div></div>
+                      <div className="rounded-2xl bg-slate-50 p-4"><div className="text-sm text-slate-500">Detected severity</div><div className=${`mt-2 text-xl font-semibold ${currentSeverity.text}`}>${results.severityLabel}</div></div>
+                    </div>
+                    <button onClick=${startSession} className="mt-6 w-full rounded-2xl bg-calm-500 px-6 py-4 text-lg font-semibold text-white shadow-lg shadow-calm-500/25 transition hover:bg-calm-700">
+                      Start Another Session
+                    </button>
+                  </div>
+                </div>
+              </section>
+            ` : html`
+              <section className="mt-6 grid gap-6 lg:grid-cols-[1fr_1fr]">
+                <div className="rounded-[28px] glass p-6 shadow-glass">
+                  <h2 className="text-2xl font-semibold text-slate-900">Progress Preview</h2>
+                  <p className="mt-1 text-slate-600">Mock historical sessions are loaded so the demo looks complete immediately.</p>
+                  <div className="mt-5 h-72 rounded-3xl bg-white/85 p-4">
+                    <canvas ref=${chartCanvasRef}></canvas>
+                  </div>
+                </div>
+                <div className="rounded-[28px] glass p-6 shadow-glass">
+                  <h2 className="text-2xl font-semibold text-slate-900">Therapy Focus Areas</h2>
+                  <div className="mt-5 grid gap-3">
+                    ${THERAPY_TIPS.slice(0, 3).map((tip) => html`
+                      <div key=${tip.title} className="rounded-2xl bg-white/85 p-4 shadow-sm">
+                        <div className="font-semibold text-slate-900">${tip.title}</div>
+                        <p className="mt-2 text-sm leading-6 text-slate-600">${tip.body}</p>
+                      </div>
+                    `)}
+                  </div>
+                </div>
+              </section>
+            `}
+          </div>
+        </main>
+      `;
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(html`<${App} />`);
+  </script>
+</body>
+</html>
